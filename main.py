@@ -22,8 +22,12 @@ class Algo(QCAlgorithm):
             }
 
         # Weights for rsi and trend factors
-        self.weight_rsi = 0.6
-        self.weight_trend = 0.4
+        self.weight_rsi = 0.75
+        self.weight_trend = 0.25
+
+        # Position sizes for long and short positions
+        self.long_weight = 0.15
+        self.short_weight = 0.1
 
         # Profit target and stop loss for each trade
         self.profit_target = 0.05
@@ -53,7 +57,7 @@ class Algo(QCAlgorithm):
         if self.IsWarmingUp:
             return
 
-        # Compute long_scores for each stock
+        # Compute long and short scores for each stock
         long_scores = {}
         short_scores = {}
         for symbol in self.symbols:
@@ -84,38 +88,19 @@ class Algo(QCAlgorithm):
             else: 
                 short_scores[symbol] = self.weight_rsi * short_rsi + self.weight_trend * downtrend
 
-        
         # Rank stocks by score
-        ranked_stocks = sorted(long_scores.items(), key=lambda x: x[1], reverse=True)
+        ranked_long_stocks = sorted(long_scores.items(), key=lambda x: x[1], reverse=True)
         ranked_short_stocks = sorted(short_scores.items(), key=lambda x: x[1], reverse=True)
 
-        self.Debug(f'Long Stocks: {ranked_stocks}')
-        self.Debug(f'Short Stocks: {ranked_short_stocks}')
-
-        # Allocate long positions for top ranked long stocks
-        total_long_weight = 0
-        for rank, (symbol, _) in enumerate(ranked_stocks[:3]):
-            if total_long_weight >= 1.0:
-                break
-
-            # Dynamic weight: higher for top-ranked stocks
-            weight = min(0.15, 1 / (rank + 1)) 
-            self.set_holdings(symbol, weight)
+        # Allocate long positions for top 3 stocks to long
+        for _, (symbol, _) in enumerate(ranked_long_stocks[:3]):
+            self.set_holdings(symbol, self.long_weight)
             self.bracket_pending = True
-            total_long_weight += weight
 
-        # Allocate short positions for top ranked short stocks
-        total_short_weight = 0
-        for rank, (short_symbol, _) in enumerate(ranked_short_stocks[:3]):
-            # Max limit of 20% of portfolio to short positions
-            if total_short_weight >= 0.2:     
-                break
-
-            # Dynamic weight: higher for top-ranked stocks
-            weight = min(0.10, 1 / (rank + 1)) 
-            self.set_holdings(short_symbol, -weight)
+        # Allocate short positions for top 3 stocks to short
+        for _, (short_symbol, _) in enumerate(ranked_short_stocks[:3]):
+            self.set_holdings(short_symbol, -self.short_weight)
             self.bracket_pending = True
-            total_short_weight += weight
 
         # plotting our data:
         self.UpdateBenchmarkValue()
@@ -142,7 +127,9 @@ class Algo(QCAlgorithm):
 
     def uptrend_score(self, short_sma: SimpleMovingAverage, medium_sma: SimpleMovingAverage):
         """
-        Calculates uptrend score given a short-term moving average and medium-term moving average 
+        Calculates uptrend score given a short-term moving average and medium-term moving average.
+        Score is the magnitude of the short-term moving average gradient provided it is positive
+        and short-term SMA is above medium-term SMA.
         """
         # Calculate gradients
         short_sma_gradient = short_sma.window[0].Value - short_sma.window[1].Value
@@ -159,7 +146,9 @@ class Algo(QCAlgorithm):
 
     def downtrend_score(self, short_sma: SimpleMovingAverage, medium_sma: SimpleMovingAverage):
         """
-        Calculates downtrend score given a short-term moving average and medium-term moving average 
+        Calculates downtrend score given a short-term moving average and medium-term moving average
+        Score is the magnitude of the short-term moving average gradient provided it is negative
+        and short-term SMA is below medium-term SMA. 
         """
         # Calculate gradients
         short_sma_gradient = short_sma.window[0].Value - short_sma.window[1].Value
