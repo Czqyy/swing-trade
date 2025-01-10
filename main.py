@@ -22,8 +22,8 @@ class Algo(QCAlgorithm):
             }
 
         # Weights for rsi and trend factors
-        self.weight_rsi = 0.7
-        self.weight_trend = 0.3
+        self.weight_rsi = 0.6
+        self.weight_trend = 0.4
 
         # Profit target and stop loss for each trade
         self.profit_target = 0.05
@@ -71,7 +71,7 @@ class Algo(QCAlgorithm):
 
             # Combine scores
             uptrend = self.uptrend_score(short_sma, medium_sma)
-            long_rsi = self.rsi_score(rsi)
+            long_rsi = self.long_rsi_score(rsi)
             if uptrend == 0 or long_rsi == 0:
                 continue
             else:
@@ -92,53 +92,52 @@ class Algo(QCAlgorithm):
         self.Debug(f'Long Stocks: {ranked_stocks}')
         self.Debug(f'Short Stocks: {ranked_short_stocks}')
 
-        # Allocate portfolio
-        total_weight = 0
-        for rank, (symbol, score) in enumerate(ranked_stocks[:3]):
-            if total_weight >= 1.0:
+        # Allocate long positions for top ranked long stocks
+        total_long_weight = 0
+        for rank, (symbol, _) in enumerate(ranked_stocks[:3]):
+            if total_long_weight >= 1.0:
                 break
 
             # Dynamic weight: higher for top-ranked stocks
             weight = min(0.15, 1 / (rank + 1)) 
             self.set_holdings(symbol, weight)
             self.bracket_pending = True
-            total_weight += weight
+            total_long_weight += weight
 
-        # Short top ranked stock
-        total_weight = 0
-        for _, (short_symbol, _) in enumerate(ranked_short_stocks[:3]):
-            if total_weight >= 0.2:     # Max limit of 20% of portfolio to short positions
+        # Allocate short positions for top ranked short stocks
+        total_short_weight = 0
+        for rank, (short_symbol, _) in enumerate(ranked_short_stocks[:3]):
+            # Max limit of 20% of portfolio to short positions
+            if total_short_weight >= 0.2:     
                 break
 
             # Dynamic weight: higher for top-ranked stocks
             weight = min(0.10, 1 / (rank + 1)) 
             self.set_holdings(short_symbol, -weight)
             self.bracket_pending = True
-            total_weight += weight
-
-
-        # Liquidate stocks not in the top-ranked
-        # top_symbols = [symbol for symbol, score in ranked_stocks[:3]]  # Keep top 3
-        # for symbol in self.Portfolio.Keys:
-        #     if symbol.Value not in top_symbols and self.Portfolio[symbol].Invested:
-        #         self.Liquidate(symbol)
+            total_short_weight += weight
 
         # plotting our data:
         self.UpdateBenchmarkValue()
         self.plot('Strategy Equity', self.benchmarkTicker, self.benchmarkValue)
         self.plot('Strategy Equity', 'Portfolio', self.Portfolio.TotalPortfolioValue)
 
-    def rsi_score(self, rsi: RelativeStrengthIndex):
+    def long_rsi_score(self, rsi: RelativeStrengthIndex):
         """
-        Calculate normalised RSI score favouring oversold stocks
+        Calculate normalised RSI score favouring oversold stocks 
+        where higher score is given for lower RSI but above 0.5 threshold
         """
         normalized_rsi = rsi.Current.Value / 100
-        return 1 - normalized_rsi if normalized_rsi > 0.5 else 0      # Higher score for lower RSI
+        return 1 - normalized_rsi if normalized_rsi > 0.5 else 0
 
 
     def short_rsi_score(self, rsi: RelativeStrengthIndex):
+        """
+        Calculate normalised RSI score favouring overbought stocks 
+        where higher score is given for higher RSI but below 0.5 threshold
+        """
         normalized_rsi = rsi.Current.Value / 100
-        return normalized_rsi if normalized_rsi < 0.5 else 0     
+        return normalized_rsi if normalized_rsi < 0.5 else 0    
 
 
     def uptrend_score(self, short_sma: SimpleMovingAverage, medium_sma: SimpleMovingAverage):
@@ -159,6 +158,9 @@ class Algo(QCAlgorithm):
             return 0
 
     def downtrend_score(self, short_sma: SimpleMovingAverage, medium_sma: SimpleMovingAverage):
+        """
+        Calculates downtrend score given a short-term moving average and medium-term moving average 
+        """
         # Calculate gradients
         short_sma_gradient = short_sma.window[0].Value - short_sma.window[1].Value
         medium_sma_gradient = medium_sma.window[0].Value - medium_sma.window[1].Value
