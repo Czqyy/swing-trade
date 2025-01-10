@@ -11,7 +11,7 @@ class Algo(QCAlgorithm):
         self.set_cash(100000)
 
         # Basket of equities to trade
-        self.symbols = ['AAPL', 'MSFT', 'GOOG', 'AMZN', 'TSLA', 'NVDA', 'JPM', 'GS', 'BAC']
+        self.symbols = ['AAPL', 'MSFT', 'GOOG', 'AMZN', 'TSLA', 'NVDA', 'JPM', 'GS', 'BAC', 'V', 'AMD']
         self.indicators = {}
         for symbol in self.symbols:
             self.add_equity(symbol, Resolution.Daily)
@@ -23,7 +23,7 @@ class Algo(QCAlgorithm):
 
         # Weights for rsi and trend factors
         self.weight_rsi = 0.7
-        self.weight_uptrend = 0.3
+        self.weight_trend = 0.3
 
         # Profit target and stop loss for each trade
         self.profit_target = 0.05
@@ -53,8 +53,9 @@ class Algo(QCAlgorithm):
         if self.IsWarmingUp:
             return
 
-        # Compute scores for each stock
-        scores = {}
+        # Compute long_scores for each stock
+        long_scores = {}
+        short_scores = {}
         for symbol in self.symbols:
             if not data.Bars.ContainsKey(symbol):
                 continue
@@ -69,29 +70,58 @@ class Algo(QCAlgorithm):
                 continue
 
             # Combine scores
-            trend_score = self.uptrend_score(short_sma, medium_sma)
-            scores[symbol] = self.weight_rsi * self.rsi_score(rsi) + self.weight_uptrend * trend_score
+            uptrend = self.uptrend_score(short_sma, medium_sma)
+            long_rsi = self.rsi_score(rsi)
+            if uptrend == 0 or long_rsi == 0:
+                continue
+            else:
+                long_scores[symbol] = self.weight_rsi * long_rsi + self.weight_trend * uptrend
 
+            downtrend = self.downtrend_score(short_sma, medium_sma)
+            short_rsi = self.short_rsi_score(rsi)
+            if downtrend == 0 or short_rsi == 0: 
+                continue
+            else: 
+                short_scores[symbol] = self.weight_rsi * short_rsi + self.weight_trend * downtrend
+
+        
         # Rank stocks by score
-        ranked_stocks = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        ranked_stocks = sorted(long_scores.items(), key=lambda x: x[1], reverse=True)
+        ranked_short_stocks = sorted(short_scores.items(), key=lambda x: x[1], reverse=True)
+
+        self.Debug(f'Long Stocks: {ranked_stocks}')
+        self.Debug(f'Short Stocks: {ranked_short_stocks}')
 
         # Allocate portfolio
         total_weight = 0
-        for rank, (symbol, score) in enumerate(ranked_stocks):
+        for rank, (symbol, score) in enumerate(ranked_stocks[:3]):
             if total_weight >= 1.0:
                 break
-                
+
             # Dynamic weight: higher for top-ranked stocks
             weight = min(0.15, 1 / (rank + 1)) 
             self.set_holdings(symbol, weight)
             self.bracket_pending = True
             total_weight += weight
 
+        # Short top ranked stock
+        total_weight = 0
+        for _, (short_symbol, _) in enumerate(ranked_short_stocks[:3]):
+            if total_weight >= 0.2:     # Max limit of 20% of portfolio to short positions
+                break
+
+            # Dynamic weight: higher for top-ranked stocks
+            weight = min(0.10, 1 / (rank + 1)) 
+            self.set_holdings(short_symbol, -weight)
+            self.bracket_pending = True
+            total_weight += weight
+
+
         # Liquidate stocks not in the top-ranked
-        top_symbols = [symbol for symbol, score in ranked_stocks[:3]]  # Keep top 3
-        for symbol in self.Portfolio.Keys:
-            if symbol.Value not in top_symbols and self.Portfolio[symbol].Invested:
-                self.Liquidate(symbol)
+        # top_symbols = [symbol for symbol, score in ranked_stocks[:3]]  # Keep top 3
+        # for symbol in self.Portfolio.Keys:
+        #     if symbol.Value not in top_symbols and self.Portfolio[symbol].Invested:
+        #         self.Liquidate(symbol)
 
         # plotting our data:
         self.UpdateBenchmarkValue()
@@ -103,7 +133,12 @@ class Algo(QCAlgorithm):
         Calculate normalised RSI score favouring oversold stocks
         """
         normalized_rsi = rsi.Current.Value / 100
-        return 1 - normalized_rsi      # Higher score for lower RSI
+        return 1 - normalized_rsi if normalized_rsi > 0.5 else 0      # Higher score for lower RSI
+
+
+    def short_rsi_score(self, rsi: RelativeStrengthIndex):
+        normalized_rsi = rsi.Current.Value / 100
+        return normalized_rsi if normalized_rsi < 0.5 else 0     
 
 
     def uptrend_score(self, short_sma: SimpleMovingAverage, medium_sma: SimpleMovingAverage):
@@ -118,11 +153,24 @@ class Algo(QCAlgorithm):
         gradient_positive = short_sma_gradient > 0 and medium_sma_gradient > 0
         short_above_medium = short_sma.Current.Value > medium_sma.Current.Value
 
-        if not (gradient_positive or short_above_medium):
-            return 0
-        else:
+        if gradient_positive and short_above_medium:
             return short_sma_gradient
+        else:
+            return 0
 
+    def downtrend_score(self, short_sma: SimpleMovingAverage, medium_sma: SimpleMovingAverage):
+        # Calculate gradients
+        short_sma_gradient = short_sma.window[0].Value - short_sma.window[1].Value
+        medium_sma_gradient = medium_sma.window[0].Value - medium_sma.window[1].Value
+
+        # Check for an downtrend
+        gradient_negative = short_sma_gradient < 0 and medium_sma_gradient < 0
+        short_below_medium = short_sma.Current.Value < medium_sma.Current.Value
+
+        if gradient_negative and short_below_medium:
+            return -1 * short_sma_gradient
+        else:
+            return 0
     
     def on_order_event(self, order_event: OrderEvent):
         """
@@ -137,8 +185,12 @@ class Algo(QCAlgorithm):
                 entry_price = holding.average_price
 
                 # Calculate stop-loss and take-profit prices
-                stop_loss_price = entry_price * (1 - self.stop_loss)
-                profit_price = entry_price * (1 + self.profit_target)
+                if quantity > 0:
+                    stop_loss_price = entry_price * (1 - self.stop_loss)
+                    profit_price = entry_price * (1 + self.profit_target)
+                else:
+                    stop_loss_price = entry_price * (1 + self.stop_loss)
+                    profit_price = entry_price * (1 - self.profit_target)
 
                 # Place stop-loss and take-profit orders
                 self.stop_market_order(symbol, -quantity, stop_loss_price)
